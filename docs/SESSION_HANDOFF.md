@@ -1,13 +1,17 @@
 # Node.js Solaris Bootstrap Handoff
 
-This repository bootstraps Node.js `v25.9.0` from source on Solaris 11.4 and installs it into `~/.local/node`.
+This repository bootstraps a locked Node.js release from source on Solaris 11.4 and installs it into `~/.local/node`.
+
+The tracked release is stored in `NODE_VERSION.lock`. At the moment it is `v25.9.0`.
 
 ## Goal
 
 Automate:
 
-- downloading `https://nodejs.org/dist/v25.9.0/node-v25.9.0.tar.gz`
-- extracting into `work/node-v25.9.0`
+- resolving the build version from `VERSION` or `NODE_VERSION.lock`
+- refreshing `NODE_VERSION.lock` from the official Node.js release feed when requested
+- downloading `https://nodejs.org/dist/<version>/node-<version>.tar.gz`
+- extracting into `work/node-<version>`
 - applying Oracle Solaris patches `001`, `002`, `003`
 - applying a local Solaris bundled OpenSSL patch to use `/etc/openssl/3`
 - building with `gcc/g++` and `gmake`
@@ -16,10 +20,35 @@ Automate:
 ## Entrypoints
 
 - `make bootstrap`
+- `make refresh-version`
 - `make refresh-patches`
 - `make verify`
 
 All target logic delegates to `scripts/bootstrap-node.sh`.
+
+## Version workflow
+
+Default resolution order:
+
+- `VERSION=vX.Y.Z ...` environment override for one-off runs
+- `NODE_VERSION.lock` for normal builds
+
+Supported commands:
+
+- `make refresh-version`
+  - fetches `https://nodejs.org/dist/index.json`
+  - selects the newest official Node.js release
+  - downloads the source tarball into a temporary directory
+  - validates that all Solaris patches apply with `patch --dry-run`
+  - updates `NODE_VERSION.lock` only if validation succeeds
+- `VERSION=vX.Y.Z make bootstrap`
+  - builds a specific version once without editing tracked files
+
+Important behavior:
+
+- `make bootstrap` does not auto-upgrade the version
+- a newly released Node version is not adopted unless the current patch set still applies cleanly
+- `make refresh-version` is the only command that updates `NODE_VERSION.lock`
 
 ## Fixed build assumptions
 
@@ -47,6 +76,8 @@ CC=gcc CXX=g++ ./configure \
 
 Vendored upstream patches live in `patches/upstream/` and are refreshed from Oracle with `make refresh-patches`.
 
+The current upstream patch source is Oracle Solaris Userland `components/nodejs24/patches`. Those patches are reused here against the locked Node version and must pass `patch --dry-run` before a newer release is accepted.
+
 - `001-madvise.patch`
   - avoids Solaris `madvise()` declaration conflict in V8
 - `002-pthread_getattr_np.patch`
@@ -69,6 +100,7 @@ Without the patch, `node --use-openssl-ca` tries to open `/etc/ssl/certs` and lo
 ## Verification commands
 
 ```bash
+cat NODE_VERSION.lock
 ~/.local/node/bin/node -v
 ~/.local/node/bin/npm -v
 strings ~/.local/node/bin/node | grep /etc/openssl/3
@@ -78,7 +110,8 @@ strings ~/.local/node/bin/node | grep /etc/openssl/3
 
 Expected:
 
-- `node -v` prints `v25.9.0`
+- `NODE_VERSION.lock` contains the version selected for builds
+- `node -v` prints the same version as `NODE_VERSION.lock`
 - embedded strings include `/etc/openssl/3` and `/etc/openssl/3/certs`
 - system cert count is greater than `0`
 - HTTPS test prints `200`
@@ -91,6 +124,8 @@ Expected:
 - `node-gyp`-driven addon tests may also need `MAKE=gmake`
 - `test-wasi-poll` is intentionally skipped by patch `003`
 - The install target is updated in place at `~/.local/node`
+- `clean` removes extracted `work/node-v*` trees
+- `distclean` also removes cached `downloads/node-v*.tar.gz` tarballs
 
 ## Logs
 
@@ -100,5 +135,4 @@ Build logs are written to:
 - `logs/build.log`
 - `logs/install.log`
 
-If a command fails, inspect the corresponding log first.
-
+If `refresh-version` fails before the build starts, inspect the terminal output first. If a build step fails, inspect the corresponding log.

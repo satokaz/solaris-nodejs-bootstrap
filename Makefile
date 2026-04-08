@@ -1,9 +1,12 @@
-.PHONY: bootstrap refresh-patches download extract patch build install verify clean distclean
+.PHONY: bootstrap refresh-version refresh-patches download extract patch build install verify clean distclean
 
 SCRIPT = ./scripts/bootstrap-node.sh
 
 bootstrap:
 	$(SCRIPT) bootstrap
+
+refresh-version:
+	$(SCRIPT) refresh-version
 
 refresh-patches:
 	$(SCRIPT) refresh-patches

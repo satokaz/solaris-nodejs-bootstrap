@@ -4,10 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-NODE_VERSION="v25.9.0"
-NODE_BASENAME="node-${NODE_VERSION}"
-TARBALL_URL="https://nodejs.org/dist/${NODE_VERSION}/${NODE_BASENAME}.tar.gz"
 INSTALL_PREFIX="${HOME}/.local/node"
+VERSION_LOCK_FILE="${REPO_ROOT}/NODE_VERSION.lock"
+RELEASE_INDEX_URL="https://nodejs.org/dist/index.json"
 
 DOWNLOAD_DIR="${REPO_ROOT}/downloads"
 WORK_DIR="${REPO_ROOT}/work"
@@ -15,9 +14,6 @@ PATCH_DIR="${REPO_ROOT}/patches"
 UPSTREAM_PATCH_DIR="${PATCH_DIR}/upstream"
 LOCAL_PATCH_DIR="${PATCH_DIR}/local"
 LOG_DIR="${REPO_ROOT}/logs"
-
-TARBALL_PATH="${DOWNLOAD_DIR}/${NODE_BASENAME}.tar.gz"
-SRC_DIR="${WORK_DIR}/${NODE_BASENAME}"
 
 JOBS="${JOBS:-16}"
 
@@ -30,6 +26,12 @@ UPSTREAM_PATCHES=(
 LOCAL_PATCHES=(
   "004-solaris-openssl-defaults.patch"
 )
+
+NODE_VERSION=""
+NODE_BASENAME=""
+TARBALL_URL=""
+TARBALL_PATH=""
+SRC_DIR=""
 
 log() {
   printf '[bootstrap] %s\n' "$*"
@@ -54,6 +56,12 @@ require_file() {
   [[ -e "${path}" ]] || die "missing required file: ${path}"
 }
 
+write_file() {
+  local path="$1"
+  local value="$2"
+  printf '%s\n' "${value}" > "${path}"
+}
+
 fetch_url() {
   local url="$1"
   local dest="$2"
@@ -65,6 +73,67 @@ fetch_url() {
   else
     die "missing downloader: need curl or wget"
   fi
+}
+
+resolve_latest_release_version() {
+  local metadata
+
+  if command -v curl >/dev/null 2>&1; then
+    metadata="$(curl -fsSL "${RELEASE_INDEX_URL}")"
+  elif command -v wget >/dev/null 2>&1; then
+    metadata="$(wget -qO- "${RELEASE_INDEX_URL}")"
+  else
+    die "missing downloader: need curl or wget"
+  fi
+
+  printf '%s\n' "${metadata}" | python3 -c '
+import json
+import sys
+
+releases = json.load(sys.stdin)
+if not releases:
+    raise SystemExit("empty release metadata")
+
+version = releases[0].get("version", "")
+if not version.startswith("v"):
+    raise SystemExit(f"unexpected latest release version: {version!r}")
+
+print(version)
+'
+}
+
+set_version_context() {
+  local version="$1"
+
+  [[ "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid node version: ${version}"
+
+  NODE_VERSION="${version}"
+  NODE_BASENAME="node-${NODE_VERSION}"
+  TARBALL_URL="https://nodejs.org/dist/${NODE_VERSION}/${NODE_BASENAME}.tar.gz"
+  TARBALL_PATH="${DOWNLOAD_DIR}/${NODE_BASENAME}.tar.gz"
+  SRC_DIR="${WORK_DIR}/${NODE_BASENAME}"
+}
+
+resolve_locked_version() {
+  [[ -f "${VERSION_LOCK_FILE}" ]] || die "missing version lock file: ${VERSION_LOCK_FILE}"
+
+  local locked_version
+  locked_version="$(tr -d '[:space:]' < "${VERSION_LOCK_FILE}")"
+  [[ -n "${locked_version}" ]] || die "empty version lock file: ${VERSION_LOCK_FILE}"
+  printf '%s\n' "${locked_version}"
+}
+
+resolve_version() {
+  if [[ -n "${VERSION:-}" ]]; then
+    printf '%s\n' "${VERSION}"
+    return
+  fi
+
+  resolve_locked_version
+}
+
+load_version_context() {
+  set_version_context "$(resolve_version)"
 }
 
 run_logged() {
@@ -106,6 +175,11 @@ check_prereqs() {
   require_file /usr/lib/64/libcares.so
 }
 
+write_lock_file() {
+  local version="$1"
+  write_file "${VERSION_LOCK_FILE}" "${version}"
+}
+
 refresh_patches() {
   ensure_dirs
   local patch_name
@@ -123,6 +197,66 @@ ensure_upstream_patches() {
       fetch_url "${ORACLE_PATCH_BASE_URL}/${patch_name}" "${UPSTREAM_PATCH_DIR}/${patch_name}"
     fi
   done
+}
+
+validate_patch_set_for_version() {
+  local version="$1"
+  local temp_root
+  local temp_tarball
+  local temp_work_dir
+  local temp_src_dir
+  local patch_name
+
+  temp_root="$(mktemp -d "${TMPDIR:-/tmp}/node-bootstrap-refresh.XXXXXX")" || die "failed to create temporary directory"
+
+  temp_tarball="${temp_root}/node-${version}.tar.gz"
+  temp_work_dir="${temp_root}/work"
+  temp_src_dir="${temp_work_dir}/node-${version}"
+
+  if ! {
+    mkdir -p "${temp_work_dir}"
+
+    log "validating latest release candidate ${version}"
+    fetch_url "https://nodejs.org/dist/${version}/node-${version}.tar.gz" "${temp_tarball}"
+    gtar -xzf "${temp_tarball}" -C "${temp_work_dir}"
+    [[ -d "${temp_src_dir}" ]]
+
+    ensure_upstream_patches
+
+    for patch_name in "${UPSTREAM_PATCHES[@]}"; do
+      require_file "${UPSTREAM_PATCH_DIR}/${patch_name}"
+      log "dry-run patch ${patch_name} against ${version}"
+      (
+        cd "${temp_src_dir}"
+        patch -p1 --forward --batch --dry-run < "${UPSTREAM_PATCH_DIR}/${patch_name}"
+      ) >/dev/null
+    done
+
+    for patch_name in "${LOCAL_PATCHES[@]}"; do
+      require_file "${LOCAL_PATCH_DIR}/${patch_name}"
+      log "dry-run patch ${patch_name} against ${version}"
+      (
+        cd "${temp_src_dir}"
+        patch -p1 --forward --batch --dry-run < "${LOCAL_PATCH_DIR}/${patch_name}"
+      ) >/dev/null
+    done
+  }; then
+    rm -rf "${temp_root}"
+    die "patch validation failed for ${version}"
+  fi
+
+  rm -rf "${temp_root}"
+}
+
+refresh_version() {
+  local latest_version
+
+  ensure_dirs
+  latest_version="$(resolve_latest_release_version)"
+  set_version_context "${latest_version}"
+  validate_patch_set_for_version "${latest_version}"
+  write_lock_file "${latest_version}"
+  log "locked node version ${latest_version} in ${VERSION_LOCK_FILE}"
 }
 
 download_tarball() {
@@ -155,6 +289,7 @@ apply_patch_file() {
 }
 
 apply_patches() {
+  load_version_context
   [[ -d "${SRC_DIR}" ]] || extract_source
   ensure_upstream_patches
   local patch_name
@@ -169,6 +304,7 @@ apply_patches() {
 }
 
 configure_source() {
+  load_version_context
   [[ -d "${SRC_DIR}" ]] || die "source tree missing: ${SRC_DIR}"
   run_logged_in "${LOG_DIR}/configure.log" "${SRC_DIR}" \
     env CC=gcc CXX=g++ \
@@ -181,6 +317,7 @@ configure_source() {
 }
 
 build_source() {
+  load_version_context
   [[ -d "${SRC_DIR}" ]] || die "source tree missing: ${SRC_DIR}"
   run_logged "${LOG_DIR}/build.log" \
     env CC=gcc CXX=g++ \
@@ -188,6 +325,7 @@ build_source() {
 }
 
 install_source() {
+  load_version_context
   [[ -d "${SRC_DIR}" ]] || die "source tree missing: ${SRC_DIR}"
   run_logged "${LOG_DIR}/install.log" \
     env CC=gcc CXX=g++ \
@@ -199,8 +337,14 @@ verify_install() {
   require_file "${node_bin}"
 
   log "verifying installed node"
-  "${node_bin}" -v
-  "${node_bin}" -p "process.versions.openssl"
+  local node_version
+  local openssl_version
+
+  node_version="$("${node_bin}" -v)"
+  openssl_version="$("${node_bin}" -p "process.versions.openssl")"
+
+  printf '  Node.js version: %s\n' "${node_version}"
+  printf '  Bundled OpenSSL version: %s\n' "${openssl_version}"
 
   local embedded_strings
   embedded_strings="$(strings "${node_bin}")"
@@ -223,6 +367,7 @@ verify_install() {
 bootstrap() {
   check_prereqs
   ensure_dirs
+  load_version_context
   extract_source
   apply_patches
   configure_source
@@ -232,13 +377,13 @@ bootstrap() {
 }
 
 clean_work() {
-  rm -rf "${SRC_DIR}"
+  rm -rf "${WORK_DIR}"/node-v*
   rm -f "${LOG_DIR}/configure.log" "${LOG_DIR}/build.log" "${LOG_DIR}/install.log"
 }
 
 distclean_work() {
   clean_work
-  rm -f "${TARBALL_PATH}"
+  rm -f "${DOWNLOAD_DIR}"/node-v*.tar.gz
 }
 
 usage() {
@@ -246,6 +391,7 @@ usage() {
 Usage: bootstrap-node.sh <subcommand>
 
 Subcommands:
+  refresh-version  Resolve the latest Node release, validate patches, and update NODE_VERSION.lock
   refresh-patches  Download Oracle Solaris patches 001, 002, 003 into patches/upstream/
   download         Download the Node.js source tarball into downloads/
   extract          Extract the source tarball into work/
@@ -266,12 +412,18 @@ main() {
       check_prereqs
       refresh_patches
       ;;
+    refresh-version)
+      check_prereqs
+      refresh_version
+      ;;
     download)
       check_prereqs
+      load_version_context
       download_tarball
       ;;
     extract)
       check_prereqs
+      load_version_context
       extract_source
       ;;
     patch)
