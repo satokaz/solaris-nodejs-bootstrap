@@ -15,7 +15,7 @@ UPSTREAM_PATCH_DIR="${PATCH_DIR}/upstream"
 LOCAL_PATCH_DIR="${PATCH_DIR}/local"
 LOG_DIR="${REPO_ROOT}/logs"
 
-JOBS="${JOBS:-16}"
+JOBS="${JOBS:-1}"
 
 ORACLE_PATCH_BASE_URL="https://raw.githubusercontent.com/oracle/solaris-userland/master/components/nodejs24/patches"
 UPSTREAM_PATCHES=(

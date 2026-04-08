@@ -1,6 +1,6 @@
 # nodejs-bootstrap
 
-Build Node.js from source on Solaris 11.4, apply the required Solaris-specific patches, and install it into `~/.local/node`.
+Build Node.js from source on Solaris 11.4 SRU 90 (CBE 11.4.90), apply the required Solaris-specific patches, and install it into `~/.local/node`.
 
 This repository is designed for a practical workflow:
 
@@ -155,6 +155,13 @@ make bootstrap         # extract, patch, build, install, verify
 make verify            # verify installed Node.js and bundled OpenSSL version
 make clean             # remove extracted source tree and build logs
 make distclean         # clean + remove cached source tarballs
+```
+
+The build runs with `-j1` (serial) by default. To enable parallel compilation, set the `JOBS` environment variable:
+
+```bash
+JOBS=16 make bootstrap
+JOBS=8 make build
 ```
 
 ## Verification
