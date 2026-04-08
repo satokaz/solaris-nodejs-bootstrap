@@ -1,0 +1,26 @@
+--- a/deps/openssl/openssl_common.gypi
++++ b/deps/openssl/openssl_common.gypi
+@@ -55,7 +55,7 @@
+       ],
+     }, 'OS=="solaris"', {
+       'defines': [
+-        'OPENSSLDIR="/etc/ssl"',
++        'OPENSSLDIR="/etc/openssl/3"',
+         'ENGINESDIR="/dev/null"',
+         '__EXTENSIONS__'
+       ],
+--- a/deps/openssl/unofficial.gni
++++ b/deps/openssl/unofficial.gni
+@@ -42,6 +42,11 @@
+         "OPENSSLDIR=\"/System/Library/OpenSSL/\"",
+         "ENGINESDIR=\"/dev/null\"",
+       ]
++    } else if (is_solaris) {
++      defines += [
++        "OPENSSLDIR=\"/etc/openssl/3\"",
++        "ENGINESDIR=\"/dev/null\"",
++      ]
+     } else {
+       defines += [
+         "OPENSSLDIR=\"/etc/ssl\"",
+
