@@ -136,11 +136,26 @@ load_version_context() {
   set_version_context "$(resolve_version)"
 }
 
+_wait_with_progress() {
+  local pid="$1"
+  local logfile="$2"
+  local elapsed=0
+  while kill -0 "${pid}" 2>/dev/null; do
+    sleep 10
+    elapsed=$((elapsed + 10))
+    printf '\r[bootstrap]   ... %dm%02ds elapsed' $((elapsed / 60)) $((elapsed % 60)) >&2
+  done
+  (( elapsed > 0 )) && printf '\n' >&2
+  wait "${pid}"
+}
+
 run_logged() {
   local logfile="$1"
   shift
   log "running: $*"
-  if ! "$@" >"${logfile}" 2>&1; then
+  "$@" >"${logfile}" 2>&1 &
+  local pid=$!
+  if ! _wait_with_progress "${pid}" "${logfile}"; then
     printf '[bootstrap] command failed, see %s\n' "${logfile}" >&2
     tail -n 50 "${logfile}" >&2 || true
     return 1
@@ -154,12 +169,14 @@ run_logged_in() {
   log "running in ${dir}: $*"
   (
     cd "${dir}"
-    if ! "$@" >"${logfile}" 2>&1; then
-      printf '[bootstrap] command failed, see %s\n' "${logfile}" >&2
-      tail -n 50 "${logfile}" >&2 || true
-      exit 1
-    fi
-  )
+    "$@" >"${logfile}" 2>&1
+  ) &
+  local pid=$!
+  if ! _wait_with_progress "${pid}" "${logfile}"; then
+    printf '[bootstrap] command failed, see %s\n' "${logfile}" >&2
+    tail -n 50 "${logfile}" >&2 || true
+    return 1
+  fi
 }
 
 check_prereqs() {
